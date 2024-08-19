@@ -94,6 +94,7 @@ class Cloud_COM:
         self.SensorTopic = 'jetson/jetsonano/imu'
         self.BatteryTopic = 'jetson/jetsonano/batt'
         self.StreamTopic = 'jetson/jetsonano/stream'
+        self.ErrorTopic = 'jetson/jetsonano/err'
         self.ca_cert_path = Folder_Dir + '/certs/ca.crt'
         self.isStreaming = False
         # print(self.ca_cert_path)
@@ -157,37 +158,38 @@ class Cloud_COM:
 
 
     async def websocket_client(self):
-        try:
-            uri = "wss://begvn.home:9090/stream"
-            
+        # try:
+        uri = "wss://begvn.home:9090/stream"
+        
+    
+        context = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS_CLIENT)
+        context.load_verify_locations(cafile='./ca.crt')
+        # cap = cv2.VideoCapture(0)
+        
+        async with websockets.connect(uri,ssl=context,open_timeout=120) as websocket:
+            print('Server created')
             self.camera_process = run_camera_process()
-            context = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS_CLIENT)
-            context.load_verify_locations(cafile='./ca.crt')
-            # cap = cv2.VideoCapture(0)
-            
-            async with websockets.connect(uri,ssl=context,open_timeout=120) as websocket:
-                print('Server created')
-                # Create tasks for managing pings and receiving messages
-                ping_task = asyncio.create_task(self.manage_pings(websocket))
-                # listen_task = asyncio.create_task(listen_for_messages(websocket,cap))
-                listen_task = asyncio.create_task(self.listen_for_messages(websocket,self.camera_process))
+            # Create tasks for managing pings and receiving messages
+            ping_task = asyncio.create_task(self.manage_pings(websocket))
+            # listen_task = asyncio.create_task(listen_for_messages(websocket,cap))
+            listen_task = asyncio.create_task(self.listen_for_messages(websocket,self.camera_process))
 
-                # Wait for either task to complete
-                done, pending = await asyncio.wait(
-                    [listen_task,ping_task],
-                    return_when=asyncio.FIRST_COMPLETED
-                )
+            # Wait for either task to complete
+            done, pending = await asyncio.wait(
+                [listen_task,ping_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
 
-                # If here, one of the tasks has completed, cancel the others
-                for task in pending:
-                    task.cancel()
-                if listen_task in done:
-                #     # Handle specific completion, if needed
-                    print("Message listening task completed")
+            # If here, one of the tasks has completed, cancel the others
+            for task in pending:
+                task.cancel()
+            if listen_task in done:
+            #     # Handle specific completion, if needed
+                print("Message listening task completed")
 
-        except Exception as e:
-            print("websocket_client() error")
-            print(e)
+        # except Exception as e:
+        #     print("websocket_client() error")
+        #     print(e)
 
 
     def FTP_Connect(self):
@@ -227,8 +229,32 @@ class Cloud_COM:
         self.isMQTTConnected = False
 
     def send_image(self):
-        asyncio.run(self.websocket_client())
-        print("End asyncio")
+        # asyncio.run(self.websocket_client())
+        # print("End asyncio")
+        # if self.camera_process :
+        #     self.camera_process.terminate()
+        #     self.camera_process.wait()
+        # self.isStreaming = False
+        # print("End websockets")
+
+        max_retries = 3  # Set the number of retries
+        retries = 0
+        self.camera_process = None
+
+        while retries < max_retries:
+            try:
+                asyncio.run(self.websocket_client())
+                print("End asyncio")
+                break  # Exit the loop if successful
+            except Exception as e:
+                if "[Errno -2] Name or service not known" in str(e):
+                    print(f"Error: {e}. Retrying... ({retries + 1}/{max_retries})")
+                    retries += 1
+                else:
+                    print("Error in send_image()")
+                    print(e)
+                    break
+
         if self.camera_process :
             self.camera_process.terminate()
             self.camera_process.wait()
@@ -312,8 +338,7 @@ class Cloud_COM:
 
     def Publish_Sensor(self,DataJSON: str):
         try:
-            temp = self.MQTTclient.publish(self.SensorTopic,DataJSON,qos=2)
-            # print(temp)
+            self.MQTTclient.publish(self.SensorTopic,DataJSON,qos=2)
         except:
             print('Can not publish')
             pass
@@ -321,6 +346,13 @@ class Cloud_COM:
     def Publish_Batt(self,DataJSON: str):
         try:
             self.MQTTclient.publish(self.BatteryTopic,DataJSON,qos=1)
+        except:
+            print('Can not publish')
+            pass
+
+    def Publish_Error(self,DataJSON: str):
+        try:
+            self.MQTTclient.publish(self.ErrorTopic,DataJSON,qos=1)
         except:
             print('Can not publish')
             pass
@@ -365,13 +397,13 @@ def activate_newSW(file_name):
         # stop_thread = True
         # thread.join()
         subprocess.Popen([PYTHON, BOOT, 'activate_App'])
-        exit()
+        os._exit(0)
 
     elif file_name == 'FOTA_Master_Boot':
         # stop_thread = True
         # thread.join()
         subprocess.Popen([PYTHON, BOOT, 'activate_Boot'])
-        exit()
+        os._exit(0)
 
     elif file_name == 'FOTA_Client':
         # global newClient
@@ -493,7 +525,7 @@ def connect_serial_port():
 
 
 # ser = connect_serial_port()
-TIMEOUT = 5
+TIMEOUT = 10
 startTime = 0
 isFlashSuccess = False
 
@@ -503,6 +535,7 @@ def flash_SW():
     global isFlashSuccess
     global client_pause_event
     global activate_pause_event
+    global ser
 
     client_pause_event.clear()
     activate_pause_event.clear()
@@ -526,7 +559,7 @@ def flash_SW():
             # data_value = [b for b in data]
             # print(data)
         client_pause_event.set()
-        
+        time.sleep(1)
         while True:
             if send_msg(FLASH_SUCCESS_YET):
                 print("Sent: New client flash success yet?")
@@ -540,22 +573,26 @@ def flash_SW():
                 print("New client flash success")
                 # ser.close()
                 isFlashSuccess = False
-                activate_pause_event.clear()
+                activate_pause_event.set()
                 break
 
             if current - startTime > TIMEOUT:
                 print("New client error")
+                
+                client_pause_event.clear()
                 bytesRead = ser.inWaiting()
                 ser.read(bytesRead)
-                if ser :
-                    ser.close()
+
+                bytesRead = ser.inWaiting()
+                ser.read(bytesRead)
+                ser.close()
                 # global stop_thread
                 # global thread
                 # stop_thread = True
                 # thread.join()
                 subprocess.Popen([PYTHON, BOOT, 'rollback_Client'])
                 
-                exit()
+                os._exit(0)
 
             # receive_message()
             # time.sleep(0.001)
@@ -588,9 +625,10 @@ def notify_New_SW():
     time.sleep(0.01)
 
 
+STEERING_ANGLE = 15 
 RUN = bytes([1, 110, 0, 0, 0, 30])
-TURN_LEFT = bytes([1, 111, 0, 0, 20, 0])
-TURN_RIGHT= bytes([1, 111, 0, 10, 20, 0])
+TURN_LEFT = bytes([1, 111, 0, 0, STEERING_ANGLE, 0])
+TURN_RIGHT= bytes([1, 111, 0, 10, STEERING_ANGLE, 0])
 STOP = bytes([1, 112, 0, 10, 0, 0,])
 GO_BACKWARD = bytes([1, 113, 0, 0, 0, 30])
 
@@ -635,9 +673,15 @@ FOTA_Client_data = {
 FOTA_Client_Battery = {
     "deviceId": 1,
     "Battery": {
-        "Temperature": 0,
-        "Capacity": 0
+        "temperature": 0,
+        "capacity": 0
     },
+    "recordTime": 0
+}
+
+FOTA_Error = {
+    "deviceId": 1,
+    "errorMsg": "",
     "recordTime": 0
 }
 
@@ -654,6 +698,7 @@ def classify_msg(msg, Cloud):
     elif msg[1] == 124:
         global isFlashSuccess
         isFlashSuccess = True
+        print("FOTA Client response flash success")
 
     elif msg[1] == YAW_PITCH_ROLL[1]:
         # print(msg)
@@ -710,13 +755,12 @@ def classify_msg(msg, Cloud):
         Cloud.Publish_Sensor(json_data)
 
     elif msg[1] == BATTERY[1]:
-        FOTA_Client_Battery["Battery"]["Temperature"] = msg[4]
-        FOTA_Client_Battery["Battery"]["Capacity"] = msg[5]
+        FOTA_Client_Battery["Battery"]["temperature"] = msg[4]
+        FOTA_Client_Battery["Battery"]["capacity"] = msg[5]
         FOTA_Client_Battery["recordTime"] = datetime.datetime.now().isoformat()
 
         # Send data to server
         json_data = json.dumps(FOTA_Client_Battery, indent=4)
-        
         Cloud.Publish_Batt(json_data)
 
     else :
@@ -750,26 +794,42 @@ def send_client_data_loop(Cloud, client_pause_event):
             recv_mess_start_time = time.time()
 
         current_time =  time.time()
-        if (current_time - recv_mess_start_time) > 5:
-            print("TimeoutError: cannot receive message from FOTA Client")
+        if (current_time - recv_mess_start_time) > 10:
+            error = "TimeoutError: cannot receive message from FOTA Client"
+            print(error)
+            FOTA_Error["errorMsg"] = error
+            FOTA_Error["recordTime"] = datetime.datetime.now().isoformat()
+
+            json_data = json.dumps(FOTA_Error, indent=4)
+            Cloud.Publish_Error(json_data)
+
             recv_mess_start_time =  time.time()
         
+        # print("send_client_data_loop(Cloud, client_pause_event)")
         client_pause_event.wait()
 
 
+current_steering_angle = 0
 def control_FOTA_Client(command):
+    global current_steering_angle
+
     if command == 'w':
-        send_msg(RUN)
-        print("RUN")
+        if send_msg(RUN):
+            print("RUN")
+
     elif command == 'a':
-        send_msg(TURN_LEFT)
-        print("TURN_LEFT")
+        if send_msg(TURN_LEFT):
+            print("TURN_LEFT")
+            current_steering_angle = current_steering_angle + STEERING_ANGLE
+
     elif command == 'd':
-        send_msg(TURN_RIGHT)
-        print("TURN_RIGHT")
+        if send_msg(TURN_RIGHT):
+            print("TURN_RIGHT")
+            current_steering_angle = current_steering_angle - STEERING_ANGLE
+
     elif command == 's':
-        send_msg(GO_BACKWARD)
-        print("GO_BACKWARD")
+        if send_msg(GO_BACKWARD):
+            print("GO_BACKWARD")
 
 
 def start_client_thread(Cloud):
@@ -780,6 +840,39 @@ def start_client_thread(Cloud):
     client_thread.daemon = True
     client_thread.start()
     
+
+run_type = 0
+def control_client_loop():
+    while True:
+
+        global run_type
+
+        if run_type == 0:
+            if ser.cts:
+                send_msg(RUN)
+                print("RUN")
+                run_type = 1
+        elif run_type == 1:
+            if ser.cts:
+                send_msg(TURN_LEFT)
+                print("TURN_LEFT")
+                run_type = 2
+        elif run_type == 2:
+            if ser.cts:
+                send_msg(TURN_RIGHT)
+                print("TURN_RIGHT")
+                run_type = 3
+        elif run_type == 3:
+            if ser.cts:
+                send_msg(GO_BACKWARD)
+                print("GO_BACKWARD")
+                run_type = 0 
+
+        # command = input("Enter command: ")
+                
+        # control_FOTA_Client(command)
+        # time.sleep(0.1)
+
 
 '''
 =========================================================
@@ -809,7 +902,7 @@ def handle_activate_newSW(activate_pause_event):
 if __name__ == '__main__':
     try:
         print("New APP ne")
-        print("Path: ", sys.path)
+        # print("Path: ", sys.path)
         Cloud = Cloud_COM()
         connectToServer()
         Cloud.startControl()
@@ -831,7 +924,11 @@ if __name__ == '__main__':
         else:
             print("Can not open the port.")
 
-        # activate_thread.start()
+        activate_thread.start()
+
+        # control_thread = threading.Thread(target=control_client_loop)
+        # control_thread.daemon = True
+        # control_thread.start()
         
         while True:
             # if newClient:

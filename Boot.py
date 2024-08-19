@@ -130,8 +130,8 @@ def main_run():
         if os.path.exists(BACKUP_CLIENT):
             os.rename(CLIENT, NEW_CLIENT)
             os.rename(BACKUP_CLIENT, CLIENT)
-            update_running_version('FOTA_Client')
             flashClient()
+            update_running_version('FOTA_Client')
             subprocess.Popen([PYTHON, APP])
             exit()
         else:
