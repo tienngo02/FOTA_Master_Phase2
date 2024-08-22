@@ -1,0 +1,9 @@
+appdirs
+cfg_load
+events 
+pyobjc-framework-libdispatch; sys_platform == 'darwin' 
+pyqt5 
+pyserial 
+pyudev; sys_platform == "linux"
+tqdm  
+mpy-cross==1.13

@@ -37,6 +37,25 @@ APP = 'App.py'
 BOOT = 'Boot.py'
 CLIENT = 'FOTA_Client.py'
 
+STEERING_ANGLE = 15 
+SPEED = 80
+RUN = bytes([1, 110, 0, 0, 0, SPEED])
+TURN_LEFT = bytes([1, 111, 0, 0, STEERING_ANGLE, 0])
+TURN_RIGHT= bytes([1, 111, 0, 10, STEERING_ANGLE, 0])
+STOP = bytes([1, 112, 0, 0, 0, 0])
+GO_BACKWARD = bytes([1, 113, 0, 0, 0, SPEED])
+
+NOTIFY_NEW_SW = bytes([1, 120, 0, 0, 0, 0])
+RESPONSE_CONFIMATION = bytes([1, 121, 0, 0, 0, 0])
+REQUEST_FLASH_SW = bytes([1, 122, 0, 0, 0, 111])
+FLASH_SUCCESS_YET = bytes([1, 123, 0, 0, 0, 0])
+
+YAW_PITCH_ROLL = bytes([1, 200, 0, 0, 0, 0, 0, 0])
+ACCELEROMETER = bytes([210, 211, 212, 0, 0, 0, 0, 0])
+GRYOSCOPE = bytes([220, 221, 222, 0, 0, 0, 0, 0])
+GESTURE = bytes([1, 230, 0, 0, 0, 0, 0, 0])
+BATTERY = bytes([1, 240, 0, 0, 0, 0, 0, 0])
+
 # global ser
 # newClient = True
 # stop_thread = False
@@ -101,7 +120,7 @@ class Cloud_COM:
         self.ssl_context = ssl.create_default_context(cafile=self.ca_cert_path)
         self.ftps = MyFTP_TLS(context=self.ssl_context)
         # self.ftps.context
-        self.ftps.set_debuglevel(0)
+        self.ftps.set_debuglevel(1)
         self.MQTTclient = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
                     protocol=mqtt.MQTTv5,
                     transport=self.MQTTProtocol)
@@ -163,7 +182,7 @@ class Cloud_COM:
         
     
         context = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS_CLIENT)
-        context.load_verify_locations(cafile='./ca.crt')
+        context.load_verify_locations(cafile='./certs/ca.crt')
         # cap = cv2.VideoCapture(0)
         
         async with websockets.connect(uri,ssl=context,open_timeout=120) as websocket:
@@ -237,7 +256,7 @@ class Cloud_COM:
         # self.isStreaming = False
         # print("End websockets")
 
-        max_retries = 3  # Set the number of retries
+        max_retries = 5  # Set the number of retries
         retries = 0
         self.camera_process = None
 
@@ -295,8 +314,8 @@ class Cloud_COM:
 
     def startWaitNewSW(self,NewSWCB):
         try:
-            if self.isFTPConnected == False:
-                self.FTP_Connect()
+            # if self.isFTPConnected == False:
+            #     self.FTP_Connect()
             if self.isMQTTConnected == False:
                 self.MQTT_Connect()
             self.NotifiSW_CB = NewSWCB
@@ -320,10 +339,12 @@ class Cloud_COM:
     def startControl(self):
         if self.isMQTTConnected == False:
             self.MQTT_Connect()
-        self.MQTTclient.subscribe(CONTROL_TOPIC,qos=2)
+        self.MQTTclient.subscribe(CONTROL_TOPIC,qos=1)
 
     def GetNewSW(self,SWname: str):
         try:
+            if self.isFTPConnected == False:
+                self.FTP_Connect()
             Unverified_SW_io = io.BytesIO()
             self.ftps.retrbinary('RETR ' + SWname,Unverified_SW_io.write)
             Unverified_SW_io.seek(0)
@@ -391,33 +412,19 @@ def NewSW_CB(Cloud, Swname):
 def activate_newSW(file_name):
     print(datetime.datetime.now())
     print(file_name)
-    # global stop_thread
-    # global thread
+
     if file_name == 'FOTA_Master_App':
-        # stop_thread = True
-        # thread.join()
         subprocess.Popen([PYTHON, BOOT, 'activate_App'])
         os._exit(0)
 
     elif file_name == 'FOTA_Master_Boot':
-        # stop_thread = True
-        # thread.join()
         subprocess.Popen([PYTHON, BOOT, 'activate_Boot'])
         os._exit(0)
 
     elif file_name == 'FOTA_Client':
-        # global newClient
-        # global ser
-        # ser = connect_serial_port()
-        # if ser:
-        #     time.sleep(1)
-        #     byteRead = ser.inWaiting()
-        #     if byteRead > 0:
-        #         data = ser.read(byteRead)
-        #         data_value = [b for b in data]
-        #     newClient = True
         while True: 
             if send_msg(NOTIFY_NEW_SW):
+                print("NOTIFY_NEW_SW")
                 break
             time.sleep(0.001)
 
@@ -479,11 +486,6 @@ UART Communication
 =========================================================
 '''
 
-NOTIFY_NEW_SW = bytes([1, 120, 0, 0, 0, 0])
-RESPONSE_CONFIMATION = bytes([1, 121, 0, 0, 0, 0])
-REQUEST_FLASH_SW = bytes([1, 122, 0, 0, 0, 111])
-FLASH_SUCCESS_YET = bytes([1, 123, 0, 0, 0, 0])
-
 
 def getPort():
     ports = serial.tools.list_ports.comports()
@@ -503,14 +505,13 @@ def getPort():
 MAX_RETRIES = 5
 RETRY_DELAY = 5
 
-
 def connect_serial_port():
     attempt = 0
     while attempt < MAX_RETRIES:
         try:
             seri = serial.Serial(port=getPort(), baudrate=115200, parity=serial.PARITY_NONE,
                                 stopbits=serial.STOPBITS_ONE,
-                                bytesize=serial.EIGHTBITS, timeout=1)
+                                bytesize=serial.EIGHTBITS, timeout=1,write_timeout=0.5)
             print("Open successfully")
             return seri
 
@@ -537,17 +538,19 @@ def flash_SW():
     global activate_pause_event
     global ser
 
-    client_pause_event.clear()
+    # client_pause_event.clear()
     activate_pause_event.clear()
 
-    bytesRead = ser.inWaiting()
-    ser.read(bytesRead)
-    ser.close()
     # newClient = False
     # time.sleep(1)
     print("Flash SW for FOTA Client")
     # exit()
 
+    time.sleep(1)
+    while ser.inWaiting():
+        ser.read()
+    ser.close()
+    # time.sleep(5)
     subprocess.run([PYTHON, BOOT, 'activate_Client'])
     
     ser = connect_serial_port()
@@ -558,8 +561,8 @@ def flash_SW():
             data = ser.read(byteRead)
             # data_value = [b for b in data]
             # print(data)
-        client_pause_event.set()
-        time.sleep(1)
+        # client_pause_event.set()
+        # time.sleep(1)
         while True:
             if send_msg(FLASH_SUCCESS_YET):
                 print("Sent: New client flash success yet?")
@@ -594,7 +597,7 @@ def flash_SW():
                 
                 os._exit(0)
 
-            # receive_message()
+            receive_message(Cloud)
             # time.sleep(0.001)
 
 
@@ -625,28 +628,19 @@ def notify_New_SW():
     time.sleep(0.01)
 
 
-STEERING_ANGLE = 15 
-RUN = bytes([1, 110, 0, 0, 0, 30])
-TURN_LEFT = bytes([1, 111, 0, 0, STEERING_ANGLE, 0])
-TURN_RIGHT= bytes([1, 111, 0, 10, STEERING_ANGLE, 0])
-STOP = bytes([1, 112, 0, 10, 0, 0,])
-GO_BACKWARD = bytes([1, 113, 0, 0, 0, 30])
-
-
 def send_msg(data):
     # create msg
-    if ser.cts:
+    try:
+        while not ser.cts:
+            continue
+        # if ser.cts:
+        print('Sended')
         message = bytes([35]) + data + calc_crc_modbus(data)
         ser.write(message)
         return True
-    return False
-
-
-YAW_PITCH_ROLL = bytes([1, 200, 0, 0, 0, 0, 0, 0])
-ACCELEROMETER = bytes([210, 211, 212, 0, 0, 0, 0, 0])
-GRYOSCOPE = bytes([220, 221, 222, 0, 0, 0, 0, 0])
-GESTURE = bytes([1, 230, 0, 0, 0, 0, 0, 0])
-BATTERY = bytes([1, 240, 0, 0, 0, 0, 0, 0])
+        return False
+    except Exception as e:
+        print("Write e: ",e)
 
 
 FOTA_Client_data = {
@@ -724,7 +718,8 @@ def classify_msg(msg, Cloud):
     # ACCELEROMETER Function code 210 -> 212
     elif int(msg[1] / 10) == 21 :
         accelerometer = FOTA_Client_data["Accelerator"]
-        accelerometer_data = int.from_bytes(msg[2:6], byteorder='big', signed=True)
+        accelerometer_data = int.from_bytes(msg[4:6], byteorder='big', signed=True)
+        accelerometer_data = accelerometer_data - 16384
 
         if msg[1] == ACCELEROMETER[0]:
             accelerometer["x"] = accelerometer_data
@@ -736,7 +731,8 @@ def classify_msg(msg, Cloud):
     # GRYOSCOPE Function code 220 -> 222
     elif int(msg[1] / 10) == 22 :
         gryoscope = FOTA_Client_data["Gyroscope"]
-        gryoscope_data = int.from_bytes(msg[2:6], byteorder='big', signed=True)
+        gryoscope_data = int.from_bytes(msg[4:6], byteorder='big', signed=True)
+        gryoscope_data = gryoscope_data - 500
 
         if msg[1] == GRYOSCOPE[0]:
             gryoscope["x"] = gryoscope_data
@@ -768,21 +764,44 @@ def classify_msg(msg, Cloud):
 
 
 def receive_message(Cloud):
-    bytesToRead = ser.inWaiting()
-    if bytesToRead > 0 :
-        start_byte = ser.read(1)
-        if start_byte == b'#' and bytesToRead >= 9:
-            data_bytes = ser.read(8)
-            message = [b for b in data_bytes]
-            crc = calc_crc_modbus(message[0:6])
-            if message[6] == crc[0] and message[7] == crc[1]:
-                classify_msg(message, Cloud)
-                return True
+    try:
+        bytesToRead = ser.inWaiting()
+        if bytesToRead > 0 :
+            start_byte = ser.read(1)
+            if start_byte == b'#' and bytesToRead >= 9:
+                data_bytes = ser.read(8)
+                message = [b for b in data_bytes]
+                crc = calc_crc_modbus(message[0:6])
+                if message[6] == crc[0] and message[7] == crc[1]:
+                    classify_msg(message, Cloud)
+                    return True
+                else:
+                    # print("Error message:", message)
+                    return False
             else:
-                print("Error message:", message)
+                # print(start_byte)
+                with open('output.txt', 'ab') as file:
+                    file.write(start_byte)
                 return False
-        else:
-            return False
+
+            # read = ser.read(bytesToRead)
+            # with open('output4.txt', 'ab') as file:
+            #     file.write(read)
+            # # print(read)
+            # return True
+    except Exception as e:
+        print("Error in receive_message(Cloud):")
+        print(e)
+        with open('Error.txt', 'ab') as file:
+            # file.write(bytes(e))
+            error_message = f"Error: {str(e)}\n"
+            file.write(error_message.encode('utf-8'))
+
+        FOTA_Error["errorMsg"] = error_message
+        FOTA_Error["recordTime"] = datetime.datetime.now().isoformat()
+        json_data = json.dumps(FOTA_Error, indent=4)
+        Cloud.Publish_Error(json_data)
+        time.sleep(5)
 
 
 # run_type = 0
@@ -794,7 +813,7 @@ def send_client_data_loop(Cloud, client_pause_event):
             recv_mess_start_time = time.time()
 
         current_time =  time.time()
-        if (current_time - recv_mess_start_time) > 10:
+        if (current_time - recv_mess_start_time) > TIMEOUT:
             error = "TimeoutError: cannot receive message from FOTA Client"
             print(error)
             FOTA_Error["errorMsg"] = error
@@ -815,22 +834,28 @@ def control_FOTA_Client(command):
 
     if command == 'w':
         if send_msg(RUN):
-            print("RUN")
+            # print("RUN")
+            pass
 
     elif command == 'a':
         if send_msg(TURN_LEFT):
-            print("TURN_LEFT")
+            # print("TURN_LEFT")
             current_steering_angle = current_steering_angle + STEERING_ANGLE
 
     elif command == 'd':
+        
         if send_msg(TURN_RIGHT):
-            print("TURN_RIGHT")
+            # print("TURN_RIGHT")
             current_steering_angle = current_steering_angle - STEERING_ANGLE
 
     elif command == 's':
-        if send_msg(GO_BACKWARD):
-            print("GO_BACKWARD")
-
+        send_msg(GO_BACKWARD)
+        # if send_msg(GO_BACKWARD):
+        #     print("GO_BACKWARD")
+    elif command == 'q':
+        send_msg(STOP)
+        # if send_msg(GO_BACKWARD):
+        #     print("GO_BACKWARD")
 
 def start_client_thread(Cloud):
     global client_pause_event
@@ -847,31 +872,33 @@ def control_client_loop():
 
         global run_type
 
-        if run_type == 0:
-            if ser.cts:
-                send_msg(RUN)
-                print("RUN")
-                run_type = 1
-        elif run_type == 1:
-            if ser.cts:
-                send_msg(TURN_LEFT)
-                print("TURN_LEFT")
-                run_type = 2
-        elif run_type == 2:
-            if ser.cts:
-                send_msg(TURN_RIGHT)
-                print("TURN_RIGHT")
-                run_type = 3
-        elif run_type == 3:
-            if ser.cts:
-                send_msg(GO_BACKWARD)
-                print("GO_BACKWARD")
-                run_type = 0 
+        # if run_type == 0:
+        #     if ser.cts:
+        #         send_msg(RUN)
+        #         print("RUN")
+        #         run_type = 1
+        #         time.sleep(0.1)
+        # elif run_type == 1:
+        #     if ser.cts:
+        #         send_msg(TURN_LEFT)
+        #         print("TURN_LEFT")
+        #         run_type = 2
+        #         time.sleep(0.1)
+        # elif run_type == 2:
+        #     if ser.cts:
+        #         send_msg(TURN_RIGHT)
+        #         print("TURN_RIGHT")
+        #         run_type = 0
+        #         time.sleep(0.1)
+        # elif run_type == 3:
+        #     if ser.cts:
+        #         send_msg(GO_BACKWARD)
+        #         print("GO_BACKWARD")
+        #         run_type = 0 
 
-        # command = input("Enter command: ")
+        command = input("Enter command: ")
                 
-        # control_FOTA_Client(command)
-        # time.sleep(0.1)
+        control_FOTA_Client(command)
 
 
 '''
@@ -903,6 +930,7 @@ if __name__ == '__main__':
     try:
         print("New APP ne")
         # print("Path: ", sys.path)
+        # #Cloud
         Cloud = Cloud_COM()
         connectToServer()
         Cloud.startControl()
@@ -913,7 +941,6 @@ if __name__ == '__main__':
         activate_thread.daemon = True
 
         ser = connect_serial_port()
-        # time.sleep(1)
         if ser:
             byteRead = ser.inWaiting()
             if byteRead > 0:
@@ -931,11 +958,10 @@ if __name__ == '__main__':
         # control_thread.start()
         
         while True:
-            # if newClient:
-            #     receive_message()
+            
             time.sleep(0.001)
     except Exception as e:
-        # print('App is error, rollback app')
         print(e)
-        # subprocess.Popen(['python3.12', 'Boot.py', 'rollback_App'])
+        print('App is error, rollback app')
+        subprocess.Popen(['python3.12', 'Boot.py', 'rollback_App'])
         exit()

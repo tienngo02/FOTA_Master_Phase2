@@ -42,9 +42,6 @@ def flashClient():
     print("Start..........")
     process = subprocess.run([PYTHON, 'run_command.py', 'start', '5'])
     time.sleep(3)
-    # subprocess.run([PYTHON, 'run_command.py', 'cp', 'Client_Test/client_Phase1_GoRight.py', '1'])
-    # time.sleep(3)
-    # subprocess.run([PYTHON, 'run_command.py', 'start', '1'])
 
 
 def update_running_version(file_name):
