@@ -37,8 +37,8 @@ APP = 'App.py'
 BOOT = 'Boot.py'
 CLIENT = 'FOTA_Client.py'
 
-STEERING_ANGLE = 15 
-SPEED = 80
+STEERING_ANGLE = 20
+SPEED = 50
 RUN = bytes([1, 110, 0, 0, 0, SPEED])
 TURN_LEFT = bytes([1, 111, 0, 0, STEERING_ANGLE, 0])
 TURN_RIGHT= bytes([1, 111, 0, 10, STEERING_ANGLE, 0])
@@ -212,23 +212,23 @@ class Cloud_COM:
 
 
     def FTP_Connect(self):
-        try:
-            self.ftps.connect(self.host, self.FTPport)
+        # try:
+        self.ftps.connect(self.host, self.FTPport)
 
-            # print(self.ftps.getwelcome())
-            # print(self.ftps.sock)
+        # print(self.ftps.getwelcome())
+        # print(self.ftps.sock)
 
-            self.ftps.auth()
+        self.ftps.auth()
 
-            self.ftps.login(self.user, self.passwd, self.acct)
+        self.ftps.login(self.user, self.passwd, self.acct)
 
-            self.ftps.set_pasv(True)
-            self.ftps.prot_p()
-            self.ftps.cwd("SW")
-            self.isFTPConnected = True
-        except:
-            print("FTP Connect failed")
-            return
+        self.ftps.set_pasv(True)
+        self.ftps.prot_p()
+        self.ftps.cwd("SW")
+        self.isFTPConnected = True
+        # except:
+        #     print("FTP Connect failed")
+        #     return
 
     def FTP_Disconnect(self):
         if self.isFTPConnected == True:
@@ -342,19 +342,20 @@ class Cloud_COM:
         self.MQTTclient.subscribe(CONTROL_TOPIC,qos=1)
 
     def GetNewSW(self,SWname: str):
-        try:
-            if self.isFTPConnected == False:
-                self.FTP_Connect()
-            Unverified_SW_io = io.BytesIO()
-            self.ftps.retrbinary('RETR ' + SWname,Unverified_SW_io.write)
-            Unverified_SW_io.seek(0)
-            Unverified_SW = Unverified_SW_io.read()
-            print(len(Unverified_SW_io.read()))
-            Verified_SW = Security.Verify_Decrypt_SW(Unverified_SW)
-            return Verified_SW
-        except Exception as e:
-            print("Failed to get new SW, e: ",e)
-            return 
+        # try:
+        if self.isFTPConnected == False:
+            self.FTP_Connect()
+        Unverified_SW_io = io.BytesIO()
+        self.ftps.retrbinary('RETR ' + SWname,Unverified_SW_io.write)
+        Unverified_SW_io.seek(0)
+        Unverified_SW = Unverified_SW_io.read()
+        print(len(Unverified_SW_io.read()))
+        Verified_SW = Security.Verify_Decrypt_SW(Unverified_SW)
+        self.FTP_Disconnect()
+        return Verified_SW
+        # except Exception as e:
+        #     print("Failed to get new SW, e: ",e)
+        #     return 
         
 
     def Publish_Sensor(self,DataJSON: str):
@@ -383,30 +384,43 @@ def NewSW_CB(Cloud, Swname):
     # global isProcessing
     # if isCBProcessing == True:
     #     return
-    try:
-        print("CB: ", Swname)
-        parts = Swname.split('_')
-        file_name = '_'.join(parts[1:-1])  # Join parts excluding the first and last
-        version = float(parts[-1].lstrip('v'))  # Remove the leading 'v' from the last part
+    max_retries = 5  # Set the number of retries
+    retries = 0
+    
+    print("CB: ", Swname)
+    parts = Swname.split('_')
+    file_name = '_'.join(parts[1:-1])  # Join parts excluding the first and last
+    version = float(parts[-1].lstrip('v'))  # Remove the leading 'v' from the last part
 
-        version_control_obj = Version_File_Control()
-        running, non_running = version_control_obj.read_2latest_version(file_name)
+    version_control_obj = Version_File_Control()
+    running, non_running = version_control_obj.read_2latest_version(file_name)
 
-        if version > running and version > non_running:
-            print('Download: ' + Swname)
-            New_SW = Cloud.GetNewSW(Swname)
-            if New_SW:
-                new_file_name = file_name + '_new.py'
-                with open(new_file_name, "wb") as file:
-                    file.write(New_SW)
-                version_control_obj.update_version(file_name, version)
-        #         activate_newSW(file_name)
-                
-        # elif version == non_running and version_control_obj.activate(file_name):
-        #     activate_newSW(file_name)
+    if version > running and version > non_running:
+        while retries < max_retries:
+            try:
+                print('Download: ' + Swname)
+                New_SW = Cloud.GetNewSW(Swname)
+                if New_SW:
+                    new_file_name = file_name + '_new.py'
+                    with open(new_file_name, "wb") as file:
+                        file.write(New_SW)
+                    version_control_obj.update_version(file_name, version)
+                    return
+            #         activate_newSW(file_name)
+                    
+            # elif version == non_running and version_control_obj.activate(file_name):
+            #     activate_newSW(file_name)
 
-    except Exception as e:
-        print("NewSW_CB() error: ", e)
+            except Exception as e:
+                print("NewSW_CB() error: ", e)
+                print(f"Retrying... ({retries + 1}/{max_retries})")
+                retries += 1
+                time.sleep(5)
+
+        print("Can not get new SW")
+
+    
+
 
 
 def activate_newSW(file_name):
@@ -534,7 +548,7 @@ def flash_SW():
 
     # global newClient
     global isFlashSuccess
-    global client_pause_event
+    # global client_pause_event
     global activate_pause_event
     global ser
 
@@ -547,10 +561,20 @@ def flash_SW():
     # exit()
 
     time.sleep(1)
+    # for i in range(0,10):
+    #     while ser.inWaiting():
+    #         read = ser.read()
+    #         with open('output2.txt', 'ab') as file:
+    #                 file.write(read)
+    #     time.sleep(1)
+    bytesRead = ser.inWaiting()
     while ser.inWaiting():
-        ser.read()
+        read = ser.read(bytesRead)
+        with open('output2.txt', 'ab') as file:
+            file.write(read)
     ser.close()
-    # time.sleep(5)
+    print("Wait for restart")
+    time.sleep(20)
     subprocess.run([PYTHON, BOOT, 'activate_Client'])
     
     ser = connect_serial_port()
@@ -582,7 +606,7 @@ def flash_SW():
             if current - startTime > TIMEOUT:
                 print("New client error")
                 
-                client_pause_event.clear()
+                # client_pause_event.clear()
                 bytesRead = ser.inWaiting()
                 ser.read(bytesRead)
 
@@ -843,7 +867,6 @@ def control_FOTA_Client(command):
             current_steering_angle = current_steering_angle + STEERING_ANGLE
 
     elif command == 'd':
-        
         if send_msg(TURN_RIGHT):
             # print("TURN_RIGHT")
             current_steering_angle = current_steering_angle - STEERING_ANGLE
@@ -852,6 +875,7 @@ def control_FOTA_Client(command):
         send_msg(GO_BACKWARD)
         # if send_msg(GO_BACKWARD):
         #     print("GO_BACKWARD")
+
     elif command == 'q':
         send_msg(STOP)
         # if send_msg(GO_BACKWARD):
@@ -872,33 +896,43 @@ def control_client_loop():
 
         global run_type
 
-        # if run_type == 0:
-        #     if ser.cts:
-        #         send_msg(RUN)
-        #         print("RUN")
-        #         run_type = 1
-        #         time.sleep(0.1)
-        # elif run_type == 1:
-        #     if ser.cts:
-        #         send_msg(TURN_LEFT)
-        #         print("TURN_LEFT")
-        #         run_type = 2
-        #         time.sleep(0.1)
-        # elif run_type == 2:
-        #     if ser.cts:
-        #         send_msg(TURN_RIGHT)
-        #         print("TURN_RIGHT")
-        #         run_type = 0
-        #         time.sleep(0.1)
-        # elif run_type == 3:
-        #     if ser.cts:
-        #         send_msg(GO_BACKWARD)
-        #         print("GO_BACKWARD")
-        #         run_type = 0 
-
-        command = input("Enter command: ")
+        if run_type == 0:
+            if ser.cts:
+                print("RUN")
+                run_type = 1
+                time.sleep(0.1)
                 
-        control_FOTA_Client(command)
+        elif run_type == 1:
+            if ser.cts:
+                send_msg(TURN_LEFT)
+                print("TURN_LEFT")
+                run_type = 2
+                time.sleep(0.1)
+
+        elif run_type == 2:
+            if ser.cts:
+                send_msg(STOP)
+                print("STOP")
+                run_type = 3
+                time.sleep(0.1)
+
+        elif run_type == 3:
+            if ser.cts:
+                send_msg(TURN_RIGHT)
+                print("TURN_RIGHT")
+                run_type = 4
+                time.sleep(0.1)
+
+        elif run_type == 4:
+            if ser.cts:
+                send_msg(GO_BACKWARD)
+                print("GO_BACKWARD")
+                run_type = 0 
+                time.sleep(0.1)
+
+        # command = input("Enter command: ")
+                
+        # control_FOTA_Client(command)
 
 
 '''
@@ -913,6 +947,7 @@ def handle_activate_newSW(activate_pause_event):
         activate_pause_event.wait()
 
         version_control_obj = Version_File_Control()
+
         if version_control_obj.activate('FOTA_Master_Boot'):
             activate_newSW('FOTA_Master_Boot')
             
@@ -921,7 +956,6 @@ def handle_activate_newSW(activate_pause_event):
             
         elif version_control_obj.activate('FOTA_Client'):
             activate_newSW('FOTA_Client')
-            # version_control_obj.deactive('FOTA_Client')
 
         time.sleep(3)
 
