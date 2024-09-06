@@ -29,19 +29,29 @@ JSONFILE = 'Version_information_file.json'
 
 def flashClient():
     try:
-        print("Stop.........")
-        # process = subprocess.run([PYTHON, 'run_command.py', 'cp', CLIENT,'0'],timeout=15)
         process = subprocess.run([PYTHON, 'run_command.py', 'stop'], timeout=15)
-    except subprocess.TimeoutExpired as e:
-        print('Process timeout')
-        process = subprocess.run([PYTHON, 'run_command.py', 'stop'], timeout=15)
+    except subprocess.TimeoutExpired:
+        print('Stop command timed out. Stop again...')
+        try:
+            process = subprocess.run([PYTHON, 'run_command.py', 'stop'], timeout=15)
+        except subprocess.TimeoutExpired:
+            print('Second stop command also timed out.')
 
     print("Flash...........")
-    process = subprocess.run([PYTHON, 'run_command.py', 'cp', CLIENT, '5'])
-    time.sleep(1)
+    try:
+        process = subprocess.run([PYTHON, 'run_command.py', 'cp', CLIENT, '5'], timeout=20)
+    except subprocess.TimeoutExpired:
+        print('Flash command timed out')
+
+    time.sleep(5)
+
     print("Start..........")
-    process = subprocess.run([PYTHON, 'run_command.py', 'start', '5'])
-    time.sleep(3)
+    try:
+        process = subprocess.run([PYTHON, 'run_command.py', 'start', '5'], timeout=15)
+    except subprocess.TimeoutExpired:
+        print('Start command timed out. Exiting...')
+
+    time.sleep(5)
 
 
 def update_running_version(file_name):
@@ -58,12 +68,48 @@ def update_running_version(file_name):
         json.dump(data, file, indent=4)
 
 
+def run_app():
+    process = subprocess.Popen([PYTHON, APP])
+    while process.poll() is None :
+        continue
+    return process.returncode
+
+
+def rollback_app():
+    print("Rollback app")
+    if os.path.exists(BACKUP_APP):
+        os.rename(APP, NEW_APP)
+        os.rename(BACKUP_APP, APP)
+        update_running_version('FOTA_Master_App')
+        subprocess.Popen([PYTHON, APP])
+
+        print("exit() rollback_app")
+        exit()
+    else:
+        print("Backup app file does not exist.")
+
+
+
 def main_run():
     user_input = sys.argv[1]
 
     if user_input == "run_App":
         print("Run App")
-        subprocess.Popen([PYTHON, APP])
+        # try:
+        #     run_app()
+        # except subprocess.CalledProcessError as e:
+        #     # Handle the case where the command returns a non-zero exit code
+        #     print("Error output:", e.stderr)
+        #     rollback_app()
+
+        # print("exit() run_App")
+        if run_app() == 0:
+            print("End app success")
+        else:
+            print("App error")
+            rollback_app()
+
+        print("exit() run_App")
         exit()
 
     elif user_input == "activate_Boot":
@@ -72,7 +118,13 @@ def main_run():
             os.rename(BOOT, BACKUP_BOOT)
             os.rename(NEW_BOOT, BOOT)
             update_running_version('FOTA_Master_Boot')
-            subprocess.Popen([PYTHON, BOOT, 'run_App'])
+            if run_app() == 0:
+                print("End app success")
+            else:
+                print("App error")
+                rollback_app()
+
+            print("exit() activate_Boot")
             exit()
         else:
             print("New boot file does not exist.")
@@ -83,7 +135,13 @@ def main_run():
             os.rename(BOOT, NEW_BOOT)
             os.rename(BACKUP_BOOT, BOOT)
             update_running_version('FOTA_Master_Boot')
-            subprocess.Popen([PYTHON, BOOT, 'run_App'])
+            if run_app() == 0:
+                print("End app success")
+            else:
+                print("App error")
+                rollback_app()
+
+            print("exit() rollback_Boot")
             exit()
         else:
             print("Backup boot file does not exist.")
@@ -94,21 +152,19 @@ def main_run():
             os.rename(APP, BACKUP_APP)
             os.rename(NEW_APP, APP)
             update_running_version('FOTA_Master_App')
-            subprocess.Popen([PYTHON, APP])
+            if run_app() == 0:
+                print("End app success")
+            else:
+                print("App error")
+                rollback_app()
+
+            print("exit() activate_App")
             exit()
         else:
             print("New app file does not exist.")
 
     elif user_input == "rollback_App":
-        print("Rollback app")
-        if os.path.exists(BACKUP_APP):
-            os.rename(APP, NEW_APP)
-            os.rename(BACKUP_APP, APP)
-            update_running_version('FOTA_Master_App')
-            subprocess.Popen([PYTHON, APP])
-            exit()
-        else:
-            print("Backup app file does not exist.")
+        rollback_app()
 
     elif user_input == 'activate_Client':
         print("Activate client")
@@ -118,6 +174,7 @@ def main_run():
             flashClient()
             update_running_version('FOTA_Client')
             # subprocess.Popen([PYTHON, APP])
+            print("exit() activate_Client")
             exit()
         else:
             print("New client file does not exist.")
@@ -129,7 +186,13 @@ def main_run():
             os.rename(BACKUP_CLIENT, CLIENT)
             flashClient()
             update_running_version('FOTA_Client')
-            subprocess.Popen([PYTHON, APP])
+            if run_app() == 0:
+                print("End app success")
+            else:
+                print("App error")
+                rollback_app()
+
+            print("exit() rollback_Client")
             exit()
         else:
             print("Backup client file does not exist.")
@@ -139,13 +202,13 @@ def main_run():
 
 
 if __name__ == '__main__':
+    # print(os.getpid())
     try:
-        print("New bootloader ne!")
         main_run()
         print("Bootloader finished.")
         exit()
     except Exception as e:
-        # print('Boot is error, rollback boot')
+        print('Boot is error, rollback boot')
         print(e)
-        # subprocess.Popen(['python3.12', 'FOTA_Master_Boot_backup.py', 'rollback_Boot'])
+        subprocess.Popen(['python3.12', 'FOTA_Master_Boot_backup.py', 'rollback_Boot'])
         exit()

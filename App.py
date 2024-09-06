@@ -37,18 +37,19 @@ APP = 'App.py'
 BOOT = 'Boot.py'
 CLIENT = 'FOTA_Client.py'
 
-STEERING_ANGLE = 20
-SPEED = 50
-RUN = bytes([1, 110, 0, 0, 0, SPEED])
+STEERING_ANGLE = 20 
+SPEED = 0
+
 TURN_LEFT = bytes([1, 111, 0, 0, STEERING_ANGLE, 0])
 TURN_RIGHT= bytes([1, 111, 0, 10, STEERING_ANGLE, 0])
 STOP = bytes([1, 112, 0, 0, 0, 0])
-GO_BACKWARD = bytes([1, 113, 0, 0, 0, SPEED])
+BEEP = bytes([1, 114, 0, 0, 0, 0])
 
 NOTIFY_NEW_SW = bytes([1, 120, 0, 0, 0, 0])
 RESPONSE_CONFIMATION = bytes([1, 121, 0, 0, 0, 0])
 REQUEST_FLASH_SW = bytes([1, 122, 0, 0, 0, 111])
 FLASH_SUCCESS_YET = bytes([1, 123, 0, 0, 0, 0])
+RESTART_CLIENT = bytes([1, 125, 0, 0, 0, 0])
 
 YAW_PITCH_ROLL = bytes([1, 200, 0, 0, 0, 0, 0, 0])
 ACCELEROMETER = bytes([210, 211, 212, 0, 0, 0, 0, 0])
@@ -121,15 +122,20 @@ class Cloud_COM:
         self.ftps = MyFTP_TLS(context=self.ssl_context)
         # self.ftps.context
         self.ftps.set_debuglevel(1)
-        self.MQTTclient = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+        self.MQTTControlclient = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
                     protocol=mqtt.MQTTv5,
                     transport=self.MQTTProtocol)
-        self.MQTTclient.tls_set(ca_certs=self.ca_cert_path)
+        self.MQTTControlclient.tls_set(ca_certs=self.ca_cert_path)
+        self.MQTTSWclient = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+                    protocol=mqtt.MQTTv5,
+                    transport=self.MQTTProtocol)
+        self.MQTTSWclient.tls_set(ca_certs=self.ca_cert_path)
         self.isFTPConnected = False
         self.isMQTTConnected = False
         self.NewMasterApp = False
         self.NewMasterBoot = False
         self.NewClient = False
+        self.DownloadingClient = 0
         # self.isReceiveResponse = False
         
 
@@ -235,16 +241,28 @@ class Cloud_COM:
             self.ftps.quit()
             self.isFTPConnected = False
 
+
+    def MQTT_SWConnect(self):
+        self.MQTTSWclient.username_pw_set(self.user, self.passwd)
+        self.MQTTSWclient.connect(self.host,self.MQTTPort)
+        self.MQTTSWclient.loop_start()
+        self.MQTTSWclient.on_message = self.MQTT_On_message
+
+    def MQTT_ControlConnect(self):
+        self.MQTTControlclient.username_pw_set(self.user, self.passwd)
+        self.MQTTControlclient.connect(self.host,self.MQTTPort)
+        self.MQTTControlclient.loop_start()
+        self.MQTTControlclient.on_message = self.MQTT_On_message
+
     def MQTT_Connect(self):
-        self.MQTTclient.username_pw_set(self.user, self.passwd)
-        self.MQTTclient.connect(self.host,self.MQTTPort)
-        self.MQTTclient.loop_start()
-        self.MQTTclient.on_message = self.MQTT_On_message
+        self.MQTT_ControlConnect()
+        self.MQTT_SWConnect()
         self.isMQTTConnected = True
 
     def MQTT_Disconnect(self):
         # self.MQTTclient.loop_stop()
-        self.MQTTclient.disconnect()
+        self.MQTTControlclient.disconnect()
+        self.MQTTSWclient.disconnect()
         self.isMQTTConnected = False
 
     def send_image(self):
@@ -286,7 +304,12 @@ class Cloud_COM:
         payload = message.payload.decode()
         topic = message.topic
         if topic == "SW/Jetson/FOTA_Master_App" or topic == "SW/Jetson/FOTA_Master_Boot" or topic == "SW/Jetson/FOTA_Client":
+            # self.MQTTSWclient.disconnect()
+            # self.DownloadingClient +=1
             self.NotifiSW_CB(self,payload)
+            # self.isDownloading -= 1 
+            print("Callback complete")
+            # self.MQTT_SWConnect()
         elif topic == 'jetson/jetsonano/stream':
             print(self.isStreaming)
             if payload == 'start' and self.isStreaming == False:
@@ -319,10 +342,10 @@ class Cloud_COM:
             if self.isMQTTConnected == False:
                 self.MQTT_Connect()
             self.NotifiSW_CB = NewSWCB
-            self.MQTTclient.subscribe("SW/Jetson/#",qos=2)
+            self.MQTTSWclient.subscribe("SW/Jetson/#",qos=2)
             return True
         except Exception as e:
-            print("Connect error: ",e)
+            print("startWaitNewSW() Connect error: ",e)
             return False
     
 
@@ -330,28 +353,31 @@ class Cloud_COM:
         try:
             if self.isMQTTConnected == False:
                 self.MQTT_Connect()
-            self.MQTTclient.subscribe(self.StreamTopic,qos=2)
+            self.MQTTControlclient.subscribe(self.StreamTopic,qos=2)
             return True
         except Exception as e:
-            print("Connect error: ",e)
+            print("startWaitStreamReq() Connect error: ",e)
             return False
 
     def startControl(self):
         if self.isMQTTConnected == False:
             self.MQTT_Connect()
-        self.MQTTclient.subscribe(CONTROL_TOPIC,qos=1)
+        self.MQTTControlclient.subscribe(CONTROL_TOPIC,qos=1)
 
     def GetNewSW(self,SWname: str):
         # try:
         if self.isFTPConnected == False:
             self.FTP_Connect()
+        self.DownloadingClient +=1
         Unverified_SW_io = io.BytesIO()
         self.ftps.retrbinary('RETR ' + SWname,Unverified_SW_io.write)
+        self.DownloadingClient -=1
         Unverified_SW_io.seek(0)
         Unverified_SW = Unverified_SW_io.read()
         print(len(Unverified_SW_io.read()))
         Verified_SW = Security.Verify_Decrypt_SW(Unverified_SW)
-        self.FTP_Disconnect()
+        if self.DownloadingClient == 0:
+            self.FTP_Disconnect()
         return Verified_SW
         # except Exception as e:
         #     print("Failed to get new SW, e: ",e)
@@ -360,21 +386,21 @@ class Cloud_COM:
 
     def Publish_Sensor(self,DataJSON: str):
         try:
-            self.MQTTclient.publish(self.SensorTopic,DataJSON,qos=2)
+            self.MQTTControlclient.publish(self.SensorTopic,DataJSON,qos=2)
         except:
             print('Can not publish')
             pass
 
     def Publish_Batt(self,DataJSON: str):
         try:
-            self.MQTTclient.publish(self.BatteryTopic,DataJSON,qos=1)
+            self.MQTTControlclient.publish(self.BatteryTopic,DataJSON,qos=1)
         except:
             print('Can not publish')
             pass
 
     def Publish_Error(self,DataJSON: str):
         try:
-            self.MQTTclient.publish(self.ErrorTopic,DataJSON,qos=1)
+            self.MQTTControlclient.publish(self.ErrorTopic,DataJSON,qos=1)
         except:
             print('Can not publish')
             pass
@@ -406,10 +432,6 @@ def NewSW_CB(Cloud, Swname):
                         file.write(New_SW)
                     version_control_obj.update_version(file_name, version)
                     return
-            #         activate_newSW(file_name)
-                    
-            # elif version == non_running and version_control_obj.activate(file_name):
-            #     activate_newSW(file_name)
 
             except Exception as e:
                 print("NewSW_CB() error: ", e)
@@ -430,10 +452,12 @@ def activate_newSW(file_name):
     if file_name == 'FOTA_Master_App':
         subprocess.Popen([PYTHON, BOOT, 'activate_App'])
         os._exit(0)
+        # return True
 
     elif file_name == 'FOTA_Master_Boot':
         subprocess.Popen([PYTHON, BOOT, 'activate_Boot'])
         os._exit(0)
+        # return True
 
     elif file_name == 'FOTA_Client':
         while True: 
@@ -540,53 +564,40 @@ def connect_serial_port():
 
 
 # ser = connect_serial_port()
-TIMEOUT = 10
+TIMEOUT = 5
 startTime = 0
 isFlashSuccess = False
 
 def flash_SW():
 
-    # global newClient
     global isFlashSuccess
-    # global client_pause_event
     global activate_pause_event
     global ser
 
-    # client_pause_event.clear()
-    activate_pause_event.clear()
-
-    # newClient = False
-    # time.sleep(1)
     print("Flash SW for FOTA Client")
-    # exit()
 
     time.sleep(1)
-    # for i in range(0,10):
-    #     while ser.inWaiting():
-    #         read = ser.read()
-    #         with open('output2.txt', 'ab') as file:
-    #                 file.write(read)
-    #     time.sleep(1)
     bytesRead = ser.inWaiting()
     while ser.inWaiting():
         read = ser.read(bytesRead)
         with open('output2.txt', 'ab') as file:
             file.write(read)
     ser.close()
+
     print("Wait for restart")
     time.sleep(20)
     subprocess.run([PYTHON, BOOT, 'activate_Client'])
     
+    retries = 0
+    max_retries = 5
+
     ser = connect_serial_port()
     time.sleep(1)
     if ser:
         byteRead = ser.inWaiting()
         if byteRead > 0:
             data = ser.read(byteRead)
-            # data_value = [b for b in data]
-            # print(data)
-        # client_pause_event.set()
-        # time.sleep(1)
+            
         while True:
             if send_msg(FLASH_SUCCESS_YET):
                 print("Sent: New client flash success yet?")
@@ -604,25 +615,43 @@ def flash_SW():
                 break
 
             if current - startTime > TIMEOUT:
-                print("New client error")
+                print("New client error, retrying...")
                 
-                # client_pause_event.clear()
+                if retries < max_retries:
+                    retries += 1
+                    while True:
+                        if send_msg(FLASH_SUCCESS_YET):
+                            print("Sent: New client flash success yet?")
+                            break
+                        time.sleep(0.001)
+
+                    startTime = time.time()
+                    continue
+
+                if ser:
+                    byteRead = ser.inWaiting()
+                    if byteRead > 0:
+                        data = ser.read(byteRead)
+                    while True:
+                        if send_msg(RESTART_CLIENT):
+                            print("Sent: RESTART_CLIENT")
+                            break
+                        time.sleep(0.001)
+
                 bytesRead = ser.inWaiting()
                 ser.read(bytesRead)
 
                 bytesRead = ser.inWaiting()
                 ser.read(bytesRead)
                 ser.close()
-                # global stop_thread
-                # global thread
-                # stop_thread = True
-                # thread.join()
+
+                print("Wait for restart")
+                time.sleep(20)    
+
                 subprocess.Popen([PYTHON, BOOT, 'rollback_Client'])
-                
                 os._exit(0)
 
             receive_message(Cloud)
-            # time.sleep(0.001)
 
 
 crc_table = []
@@ -655,16 +684,14 @@ def notify_New_SW():
 def send_msg(data):
     # create msg
     try:
+        message = bytes([35]) + data + calc_crc_modbus(data)
         while not ser.cts:
             continue
-        # if ser.cts:
-        print('Sended')
-        message = bytes([35]) + data + calc_crc_modbus(data)
         ser.write(message)
         return True
-        return False
     except Exception as e:
         print("Write e: ",e)
+        return False
 
 
 FOTA_Client_data = {
@@ -707,6 +734,8 @@ FOTA_Error = {
 def classify_msg(msg, Cloud):
 
     if msg[1] == RESPONSE_CONFIMATION[1]:
+        global activate_pause_event
+        activate_pause_event.clear()
         print("Send function has been confirmed")
 
     elif msg[1] == REQUEST_FLASH_SW[1]:
@@ -804,17 +833,12 @@ def receive_message(Cloud):
                     return False
             else:
                 # print(start_byte)
-                with open('output.txt', 'ab') as file:
+                with open('output2.txt', 'ab') as file:
                     file.write(start_byte)
                 return False
 
-            # read = ser.read(bytesToRead)
-            # with open('output4.txt', 'ab') as file:
-            #     file.write(read)
-            # # print(read)
-            # return True
     except Exception as e:
-        print("Error in receive_message(Cloud):")
+        print("Error in receive_message():")
         print(e)
         with open('Error.txt', 'ab') as file:
             # file.write(bytes(e))
@@ -828,10 +852,10 @@ def receive_message(Cloud):
         time.sleep(5)
 
 
-# run_type = 0
 recv_mess_start_time = time.time()
 def send_client_data_loop(Cloud, client_pause_event):
     global recv_mess_start_time
+    recv_mess_start_time = time.time()
     while True:
         if receive_message(Cloud):
             recv_mess_start_time = time.time()
@@ -848,43 +872,90 @@ def send_client_data_loop(Cloud, client_pause_event):
 
             recv_mess_start_time =  time.time()
         
-        # print("send_client_data_loop(Cloud, client_pause_event)")
         client_pause_event.wait()
 
 
-current_steering_angle = 0
-def control_FOTA_Client(command):
-    global current_steering_angle
+SPEED_CHANGE_RATE = 5
+speed = 0
+run = bytes([1, 110, 0, 0, 0])
+go_backward = bytes([1, 113, 0, 0, 0])
+ControlTest = False
 
+def ControlTest_ThrHandler():
+    global ControlTest
+    while ControlTest:
+        send_msg(TURN_LEFT)
+        time.sleep(1)
+        temp_run = run + bytes([-40+100])
+        print(temp_run)
+        send_msg(temp_run)
+        time.sleep(2)
+        send_msg(TURN_RIGHT)
+        time.sleep(1)
+        send_msg(TURN_RIGHT)
+        temp_run = run + bytes([40+100])
+        print(temp_run)
+        send_msg(temp_run)
+        time.sleep(2)
+        temp_run = run + bytes([100])
+        send_msg(temp_run)
+        print(temp_run)
+        send_msg(TURN_LEFT)
+        time.sleep(3)
+
+
+def control_FOTA_Client(command):
+    global speed
+    global run
+    global go_backward
+    global ControlTest
+    
     if command == 'w':
-        if send_msg(RUN):
-            # print("RUN")
-            pass
+        if speed > -100 :
+            speed = speed - SPEED_CHANGE_RATE
+        temp_speed = speed + 100
+        temp_run = run + bytes([temp_speed])
+        print(temp_run)
+        send_msg(temp_run)
+
+    elif command == 's': 
+        if speed < 100:
+            speed = speed + SPEED_CHANGE_RATE
+        temp_speed = speed + 100
+        temp_run = run + bytes([temp_speed])
+        print(temp_run)
+        send_msg(temp_run)
 
     elif command == 'a':
-        if send_msg(TURN_LEFT):
-            # print("TURN_LEFT")
-            current_steering_angle = current_steering_angle + STEERING_ANGLE
-
+        send_msg(TURN_LEFT)
+            
     elif command == 'd':
-        if send_msg(TURN_RIGHT):
-            # print("TURN_RIGHT")
-            current_steering_angle = current_steering_angle - STEERING_ANGLE
-
-    elif command == 's':
-        send_msg(GO_BACKWARD)
-        # if send_msg(GO_BACKWARD):
-        #     print("GO_BACKWARD")
+        send_msg(TURN_RIGHT)
 
     elif command == 'q':
+        speed = 0
         send_msg(STOP)
-        # if send_msg(GO_BACKWARD):
-        #     print("GO_BACKWARD")
+        
+    elif command == 'c':
+        send_msg(BEEP)
+    elif command == 'm':
+        ControlTest = True
+        controlTest_thr = threading.Thread(target=ControlTest_ThrHandler,)
+        controlTest_thr.start()
+    elif command == 'n':
+        ControlTest = False
+
+    # elif command == 't':
+    #     print(bytes([3]))
+    #     ser.write(bytes([3]))
+  
+    print(speed)
+
 
 def start_client_thread(Cloud):
     global client_pause_event
     client_pause_event = threading.Event()
-    client_pause_event.set()  # Initially allow the thread to run
+    client_pause_event.set()
     client_thread = threading.Thread(target=send_client_data_loop, args=(Cloud,client_pause_event,))
     client_thread.daemon = True
     client_thread.start()
@@ -894,45 +965,45 @@ run_type = 0
 def control_client_loop():
     while True:
 
-        global run_type
+        # global run_type
 
-        if run_type == 0:
-            if ser.cts:
-                print("RUN")
-                run_type = 1
-                time.sleep(0.1)
+        # if run_type == 0:
+        #     if ser.cts:
+        #         print("RUN")
+        #         run_type = 1
+        #         time.sleep(0.1)
                 
-        elif run_type == 1:
-            if ser.cts:
-                send_msg(TURN_LEFT)
-                print("TURN_LEFT")
-                run_type = 2
-                time.sleep(0.1)
+        # elif run_type == 1:
+        #     if ser.cts:
+        #         send_msg(TURN_LEFT)
+        #         print("TURN_LEFT")
+        #         run_type = 2
+        #         time.sleep(0.1)
 
-        elif run_type == 2:
-            if ser.cts:
-                send_msg(STOP)
-                print("STOP")
-                run_type = 3
-                time.sleep(0.1)
+        # elif run_type == 2:
+        #     if ser.cts:
+        #         send_msg(STOP)
+        #         print("STOP")
+        #         run_type = 3
+        #         time.sleep(0.1)
 
-        elif run_type == 3:
-            if ser.cts:
-                send_msg(TURN_RIGHT)
-                print("TURN_RIGHT")
-                run_type = 4
-                time.sleep(0.1)
+        # elif run_type == 3:
+        #     if ser.cts:
+        #         send_msg(TURN_RIGHT)
+        #         print("TURN_RIGHT")
+        #         run_type = 4
+        #         time.sleep(0.1)
 
-        elif run_type == 4:
-            if ser.cts:
-                send_msg(GO_BACKWARD)
-                print("GO_BACKWARD")
-                run_type = 0 
-                time.sleep(0.1)
+        # elif run_type == 4:
+        #     if ser.cts:
+        #         send_msg(GO_BACKWARD)
+        #         print("GO_BACKWARD")
+        #         run_type = 0 
+        #         time.sleep(0.1)
 
-        # command = input("Enter command: ")
+        command = input("Enter command: ")
                 
-        # control_FOTA_Client(command)
+        control_FOTA_Client(command)
 
 
 '''
@@ -942,8 +1013,10 @@ Main
 '''
 
 
-def handle_activate_newSW(activate_pause_event):
+def handle_activate_newSW(activate_pause_event,Cloud: Cloud_COM):
     while True:
+        if Cloud.isFTPConnected == True:
+            continue
         activate_pause_event.wait()
 
         version_control_obj = Version_File_Control()
@@ -961,41 +1034,40 @@ def handle_activate_newSW(activate_pause_event):
 
 
 if __name__ == '__main__':
-    try:
-        print("New APP ne")
-        # print("Path: ", sys.path)
-        # #Cloud
-        Cloud = Cloud_COM()
-        connectToServer()
-        Cloud.startControl()
+    # print(os.getpid())
+    
+    Cloud = Cloud_COM()
+    connectToServer()
+    Cloud.startControl()
 
-        activate_pause_event = threading.Event()
-        activate_pause_event.set()
-        activate_thread = threading.Thread(target=handle_activate_newSW, args=(activate_pause_event,))
-        activate_thread.daemon = True
+    activate_pause_event = threading.Event()
+    activate_pause_event.set()
+    activate_thread = threading.Thread(target=handle_activate_newSW, args=(activate_pause_event,Cloud,))
+    activate_thread.daemon = True
 
-        ser = connect_serial_port()
-        if ser:
-            byteRead = ser.inWaiting()
-            if byteRead > 0:
-                data = ser.read(byteRead)
-                data_value = [b for b in data]
+    ser = connect_serial_port()
+    if ser:
+        byteRead = ser.inWaiting()
+        if byteRead > 0:
+            data = ser.read(byteRead)
+            data_value = [b for b in data]
 
-            start_client_thread(Cloud)
-        else:
-            print("Can not open the port.")
+        start_client_thread(Cloud)
+    else:
+        print("Can not open the port.")
 
-        activate_thread.start()
+    activate_thread.start()
 
-        # control_thread = threading.Thread(target=control_client_loop)
-        # control_thread.daemon = True
-        # control_thread.start()
+    # control_thread = threading.Thread(target=control_client_loop)
+    # control_thread.daemon = True
+    # control_thread.start()
+    
+    while True:
         
-        while True:
-            
-            time.sleep(0.001)
-    except Exception as e:
-        print(e)
-        print('App is error, rollback app')
-        subprocess.Popen(['python3.12', 'Boot.py', 'rollback_App'])
-        exit()
+        time.sleep(0.001)
+
+    # except Exception as e:
+    #     print(e)
+    #     print('App is error, rollback app')
+    #     subprocess.Popen(['python3.12', 'Boot.py', 'rollback_App'])
+    #     exit()
